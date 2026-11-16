@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/code_review/codereviewview.tsx","./src/edtech/edtechview.tsx","./src/general_ai/generalaiview.tsx","./src/general_ai/promptlibrarymodal.tsx","./src/history/historyview.tsx","./src/settings/authmodal.tsx","./src/settings/settingsview.tsx","./src/shared/markdownrenderer.tsx"],"version":"5.9.3"}
