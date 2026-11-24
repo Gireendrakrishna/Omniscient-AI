@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
 from config import STORAGE_DIR
@@ -21,7 +21,7 @@ class DocCompareRequest(BaseModel):
     document_id_b: str
 
 
-@router.post("/api/files/upload")
+@router.post("/api/files/upload", status_code=status.HTTP_201_CREATED)
 async def api_upload_file(file: UploadFile = File(...)) -> Dict[str, Any]:
     raw_bytes = await file.read()
     if not raw_bytes:

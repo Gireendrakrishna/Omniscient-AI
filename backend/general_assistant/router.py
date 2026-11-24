@@ -1,7 +1,7 @@
 import json
 import time
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel
 
 from config import ask_llm, get_api_key_settings, save_api_keys_to_env
@@ -15,6 +15,7 @@ from general_assistant.prompt_engine import (
     record_template_usage,
     update_custom_template,
 )
+from mongo_store import note_store
 
 router = APIRouter()
 
@@ -77,6 +78,22 @@ class MemoryCreateRequest(BaseModel):
 class MemoryUpdateRequest(BaseModel):
     is_user_approved: Optional[bool] = None
     content: Optional[str] = None
+
+
+class NoteCreateRequest(BaseModel):
+    title: str
+    content: str
+    category: str = "research"
+    tags: List[str] = []
+    pinned: bool = False
+
+
+class NoteUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    pinned: Optional[bool] = None
 
 
 class ApiKeyUpdateRequest(BaseModel):
@@ -143,7 +160,7 @@ def _resolve_user_from_header(authorization: Optional[str]) -> Dict[str, Any]:
 # AUTHENTICATION & USER PROFILE (/api/auth/*)
 # ==============================================================================
 
-@router.post("/api/auth/signup")
+@router.post("/api/auth/signup", status_code=status.HTTP_201_CREATED)
 async def api_signup(payload: SignupRequest) -> Dict[str, Any]:
     email_clean = payload.email.strip().lower()
     if not email_clean or "@" not in email_clean:
@@ -356,22 +373,58 @@ async def api_chat(
     }
 
 
-@router.get("/api/conversations")
+@router.get("/api/conversations", status_code=status.HTTP_200_OK)
 async def api_list_conversations() -> Dict[str, Any]:
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM conversations ORDER BY updated_at DESC").fetchall()
-    convs = []
-    for r in rows:
-        cnt = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (r["id"],)).fetchone()[0]
-        convs.append({
+    # SQL JOIN aggregating message count and author metadata per conversation
+    rows = conn.execute(
+        """
+        SELECT c.id,
+               c.title,
+               c.active_agent,
+               c.updated_at,
+               u.full_name AS author_name,
+               COUNT(m.id) AS message_count
+        FROM conversations c
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN messages m ON m.conversation_id = c.id
+        GROUP BY c.id, c.title, c.active_agent, c.updated_at, u.full_name
+        ORDER BY c.updated_at DESC
+        """
+    ).fetchall()
+    conn.close()
+    convs = [
+        {
             "id": r["id"],
             "title": r["title"],
             "active_agent": r["active_agent"],
-            "message_count": cnt,
+            "author_name": r["author_name"] or "Omniscient User",
+            "message_count": r["message_count"],
             "updated_at": r["updated_at"],
-        })
-    conn.close()
+        }
+        for r in rows
+    ]
     return {"conversations": convs}
+
+
+@router.get("/api/conversations/{conversation_id}", status_code=status.HTTP_200_OK)
+async def api_get_conversation(conversation_id: str) -> Dict[str, Any]:
+    conn = get_conn()
+    row = conn.execute(
+        """
+        SELECT c.*, u.full_name AS author_name, COUNT(m.id) AS message_count
+        FROM conversations c
+        LEFT JOIN users u ON u.id = c.user_id
+        LEFT JOIN messages m ON m.conversation_id = c.id
+        WHERE c.id = ?
+        GROUP BY c.id, u.full_name
+        """,
+        (conversation_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return {"conversation": dict(row)}
 
 
 @router.get("/api/conversations/{conversation_id}/messages")
@@ -452,7 +505,7 @@ async def api_list_memories() -> Dict[str, Any]:
     }
 
 
-@router.post("/api/memory")
+@router.post("/api/memory", status_code=status.HTTP_201_CREATED)
 async def api_create_memory(payload: MemoryCreateRequest) -> Dict[str, Any]:
     mid = new_id()
     conn = get_conn()
@@ -465,9 +518,13 @@ async def api_create_memory(payload: MemoryCreateRequest) -> Dict[str, Any]:
     return {"memory": {"id": mid, "key": payload.key, "content": payload.content, "is_user_approved": payload.is_user_approved}}
 
 
-@router.patch("/api/memory/{memory_id}")
+@router.patch("/api/memory/{memory_id}", status_code=status.HTTP_200_OK)
 async def api_update_memory(memory_id: str, payload: MemoryUpdateRequest) -> Dict[str, Any]:
     conn = get_conn()
+    existing = conn.execute("SELECT id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory item not found")
     if payload.is_user_approved is not None:
         conn.execute(
             "UPDATE memories SET is_user_approved = ?, updated_at = ? WHERE id = ?",
@@ -478,9 +535,13 @@ async def api_update_memory(memory_id: str, payload: MemoryUpdateRequest) -> Dic
     return {"updated": True}
 
 
-@router.delete("/api/memory/{memory_id}")
+@router.delete("/api/memory/{memory_id}", status_code=status.HTTP_200_OK)
 async def api_delete_memory(memory_id: str) -> Dict[str, Any]:
     conn = get_conn()
+    existing = conn.execute("SELECT id FROM memories WHERE id = ?", (memory_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory item not found")
     conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
     conn.commit()
     conn.close()
@@ -542,7 +603,7 @@ async def api_get_prompt_templates(search: str = "", category: str = "") -> Dict
     return list_prompt_templates(search=search, category=category)
 
 
-@router.post("/api/prompt-templates")
+@router.post("/api/prompt-templates", status_code=status.HTTP_201_CREATED)
 async def api_create_prompt_template(
     payload: PromptTemplateCreateRequest,
     authorization: Optional[str] = Header(default=None),
@@ -588,7 +649,7 @@ async def api_use_prompt_template(template_id: str) -> Dict[str, Any]:
     return {"recorded": True}
 
 
-@router.post("/api/prompt-templates/optimize")
+@router.post("/api/prompt-templates/optimize", status_code=status.HTTP_200_OK)
 async def api_optimize_prompt(payload: PromptOptimizeRequest) -> Dict[str, Any]:
     attached_files = []
     if payload.attached_file_ids:
@@ -599,3 +660,60 @@ async def api_optimize_prompt(payload: PromptOptimizeRequest) -> Dict[str, Any]:
                 attached_files.append(dict(row))
         conn.close()
     return optimize_and_analyze_prompt(payload.prompt, attached_files=attached_files)
+
+
+# ==============================================================================
+# WORKSPACE RESEARCH NOTES — MONGODB SCHEMA & CRUD (/api/notes)
+# ==============================================================================
+
+@router.get("/api/notes", status_code=status.HTTP_200_OK)
+async def api_list_notes(category: str = "", tag: str = "") -> Dict[str, Any]:
+    return note_store.list_notes(category=category, tag=tag)
+
+
+@router.post("/api/notes", status_code=status.HTTP_201_CREATED)
+async def api_create_note(
+    payload: NoteCreateRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    if not payload.title.strip() or not payload.content.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Title and content are required.")
+    user = _resolve_user_from_header(authorization)
+    return note_store.create_note(
+        title=payload.title,
+        content=payload.content,
+        category=payload.category,
+        tags=payload.tags,
+        pinned=payload.pinned,
+        user_id=user["id"],
+    )
+
+
+@router.get("/api/notes/{note_id}", status_code=status.HTTP_200_OK)
+async def api_get_note(note_id: str) -> Dict[str, Any]:
+    note = note_store.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    return {"note": note}
+
+
+@router.put("/api/notes/{note_id}", status_code=status.HTTP_200_OK)
+async def api_update_note(note_id: str, payload: NoteUpdateRequest) -> Dict[str, Any]:
+    updated = note_store.update_note(
+        note_id=note_id,
+        title=payload.title,
+        content=payload.content,
+        category=payload.category,
+        tags=payload.tags,
+        pinned=payload.pinned,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    return {"note": updated}
+
+
+@router.delete("/api/notes/{note_id}", status_code=status.HTTP_200_OK)
+async def api_delete_note(note_id: str) -> Dict[str, Any]:
+    if not note_store.delete_note(note_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    return {"deleted": True, "note_id": note_id}

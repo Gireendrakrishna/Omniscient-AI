@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -27,11 +28,11 @@ import { GeneralAiView } from "./general_ai/GeneralAiView";
 import { HistoryView } from "./history/HistoryView";
 import { AuthModal } from "./settings/AuthModal";
 import { SettingsView } from "./settings/SettingsView";
-
-type NavSection = "general-ai" | "code-review" | "edtech-lms" | "history" | "settings";
+import { scheduleEventLoopFlush } from "./utils/asyncRuntime";
 
 export const App: React.FC = () => {
-  const [activeNav, setActiveNav] = useState<NavSection>("general-ai");
+  const navigate = useNavigate();
+  const location = useLocation();
   const [currentUser, setCurrentUser] = useState<any | null>(null);
 
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
@@ -90,7 +91,19 @@ export const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    scheduleEventLoopFlush(
+      () => {
+        if (messages.length > 0 && workflowTrace.length === 0) {
+          const latest = messages[messages.length - 1];
+          if (latest?.workflow_trace?.length) {
+            setWorkflowTrace(latest.workflow_trace);
+          }
+        }
+      },
+      () => {
+        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
+    );
   }, [messages]);
 
   const startNewChat = () => {
@@ -99,12 +112,12 @@ export const App: React.FC = () => {
     setWorkflowTrace([]);
     setActiveCitations([]);
     setCurrentIntent("idle");
-    setActiveNav("general-ai");
+    navigate("/");
   };
 
   const selectConversation = async (convId: string) => {
     setActiveConversationId(convId);
-    setActiveNav("general-ai");
+    navigate("/");
     try {
       const res = await apiRequest(`/api/conversations/${convId}/messages`);
       const loaded = res.messages || [];
@@ -170,12 +183,12 @@ export const App: React.FC = () => {
     .slice(0, 2)
     .toUpperCase();
 
-  const navItems: { id: NavSection; label: string; icon: any }[] = [
-    { id: "general-ai", label: "General AI", icon: Sparkles },
-    { id: "code-review", label: "Code Review", icon: Code2 },
-    { id: "edtech-lms", label: "EdTech LMS", icon: GraduationCap },
-    { id: "history", label: "Conversation History", icon: History },
-    { id: "settings", label: "Settings", icon: Settings },
+  const navItems = [
+    { to: "/", label: "General AI", icon: Sparkles, end: true },
+    { to: "/code-review", label: "Code Review", icon: Code2, end: false },
+    { to: "/edtech", label: "EdTech LMS", icon: GraduationCap, end: false },
+    { to: "/history", label: "Conversation History", icon: History, end: false },
+    { to: "/settings", label: "Settings", icon: Settings, end: false },
   ];
 
   return (
@@ -215,20 +228,22 @@ export const App: React.FC = () => {
             <nav className="space-y-1.5">
               {navItems.map((item) => {
                 const Icon = item.icon;
-                const active = activeNav === item.id;
                 return (
-                  <button
-                    key={item.id}
-                    onClick={() => setActiveNav(item.id)}
-                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-medium transition-colors ${
-                      active
-                        ? "bg-[#D4AF37]/15 text-[#FFFFFF] border border-[#D4AF37]"
-                        : "text-[#BDBDBD] hover:text-[#FFFFFF] hover:bg-[#D4AF37]/10 border border-transparent"
-                    }`}
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end}
+                    className={({ isActive }) =>
+                      `w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-xs font-medium transition-colors ${
+                        isActive
+                          ? "bg-[#D4AF37]/15 text-[#FFFFFF] border border-[#D4AF37]"
+                          : "text-[#BDBDBD] hover:text-[#FFFFFF] hover:bg-[#D4AF37]/10 border border-transparent"
+                      }`
+                    }
                   >
                     <Icon className="w-4 h-4 text-[#D4AF37] shrink-0" />
                     <span>{item.label}</span>
-                  </button>
+                  </NavLink>
                 );
               })}
             </nav>
@@ -278,7 +293,7 @@ export const App: React.FC = () => {
           <div className="p-4 border-t border-[#D4AF37]/25 bg-[#0A0A0A]">
             <div className="flex items-center justify-between gap-2">
               <div
-                onClick={() => setActiveNav("settings")}
+                onClick={() => navigate("/settings")}
                 className="cursor-pointer flex items-center gap-2.5 truncate flex-1"
                 title="Open Profile & Settings"
               >
@@ -342,7 +357,7 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            {messages.length > 0 && activeNav === "general-ai" && (
+            {messages.length > 0 && location.pathname === "/" && (
               <button onClick={exportConversationMarkdown} className="btn-secondary">
                 <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
                 <span className="hidden sm:inline">Export</span>
@@ -361,11 +376,7 @@ export const App: React.FC = () => {
               <span className="hidden sm:inline">Login / Signup</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveNav("settings")}
-              className="btn-secondary"
-            >
+            <button type="button" onClick={() => navigate("/settings")} className="btn-secondary">
               <Settings className="w-3.5 h-3.5 text-[#D4AF37]" />
               <span className="hidden md:inline">Settings</span>
             </button>
@@ -386,50 +397,59 @@ export const App: React.FC = () => {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {activeNav === "general-ai" && (
-            <GeneralAiView
-              currentUser={currentUser}
-              messages={messages}
-              setMessages={setMessages}
-              activeConversationId={activeConversationId}
-              chatBottomRef={chatBottomRef}
-              onConversationUpdate={async (convId, intent, trace, citations) => {
-                setActiveConversationId(convId);
-                setCurrentIntent(intent);
-                setWorkflowTrace(trace);
-                setActiveCitations(citations);
-                await refreshWorkspaceState();
-              }}
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <GeneralAiView
+                  currentUser={currentUser}
+                  messages={messages}
+                  setMessages={setMessages}
+                  activeConversationId={activeConversationId}
+                  chatBottomRef={chatBottomRef}
+                  onConversationUpdate={async (convId, intent, trace, citations) => {
+                    setActiveConversationId(convId);
+                    setCurrentIntent(intent);
+                    setWorkflowTrace(trace);
+                    setActiveCitations(citations);
+                    await refreshWorkspaceState();
+                  }}
+                />
+              }
             />
-          )}
-
-          {activeNav === "code-review" && <CodeReviewView />}
-          {activeNav === "edtech-lms" && <EdTechView currentUser={currentUser} />}
-
-          {activeNav === "history" && (
-            <HistoryView
-              conversations={conversations}
-              onSelectConversation={selectConversation}
-              onDeleteConversation={(id) => handleDeleteConversation(id)}
-              onClearAllConversations={handleClearAllConversations}
-              onStartNewChat={startNewChat}
+            <Route path="/code-review" element={<CodeReviewView />} />
+            <Route path="/edtech" element={<EdTechView currentUser={currentUser} />} />
+            <Route
+              path="/history"
+              element={
+                <HistoryView
+                  conversations={conversations}
+                  onSelectConversation={selectConversation}
+                  onDeleteConversation={(id) => handleDeleteConversation(id)}
+                  onClearAllConversations={handleClearAllConversations}
+                  onStartNewChat={startNewChat}
+                />
+              }
             />
-          )}
-
-          {activeNav === "settings" && (
-            <SettingsView
-              currentUser={currentUser}
-              memories={memories}
-              apiKeySettings={apiKeySettings}
-              onUserUpdated={(user) => setCurrentUser(user)}
-              onOpenSignupModal={() => {
-                setAuthMode("signup");
-                setAuthModalOpen(true);
-              }}
-              onLogout={handleLogout}
-              onRefreshState={refreshWorkspaceState}
+            <Route
+              path="/settings"
+              element={
+                <SettingsView
+                  currentUser={currentUser}
+                  memories={memories}
+                  apiKeySettings={apiKeySettings}
+                  onUserUpdated={(user) => setCurrentUser(user)}
+                  onOpenSignupModal={() => {
+                    setAuthMode("signup");
+                    setAuthModalOpen(true);
+                  }}
+                  onLogout={handleLogout}
+                  onRefreshState={refreshWorkspaceState}
+                />
+              }
             />
-          )}
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </div>
       </main>
 

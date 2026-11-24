@@ -1,5 +1,5 @@
 from typing import Any, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from database import get_conn, new_id, now_iso
@@ -18,7 +18,7 @@ class ImageAnalyzeRequest(BaseModel):
     prompt: str = "Analyze this image and explain its technical structure."
 
 
-@router.post("/api/images/generate")
+@router.post("/api/images/generate", status_code=status.HTTP_201_CREATED)
 async def api_generate_image(payload: ImageGenRequest) -> Dict[str, Any]:
     img = generate_image(payload.prompt, payload.style)
     img_id = new_id()

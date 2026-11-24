@@ -1,18 +1,51 @@
 """
-Simple, Clean SQLite Database Layer (backend/database.py)
-Supports Users (Login, Signup, Profile), Conversations, Messages, Prompt Templates,
-Memories, Documents, Images, and EdTech LMS tables.
+Relational SQL Database Layer (backend/database.py)
+Supports PostgreSQL (`DATABASE_URL=postgresql://...` via `psycopg`) and automatic
+local SQLite (`omniscient.db`) fallback, using normalized relational tables and SQL JOINs.
 """
 
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import sqlite3
+from typing import Any
 import uuid
 
-from config import ROOT_DIR
+from config import ROOT_DIR, get_env
 
 DB_PATH = ROOT_DIR / "omniscient.db"
+
+
+class _PostgresCompatConnection:
+    """Wraps a psycopg3 PostgreSQL connection so existing `?` queries work transparently."""
+
+    def __init__(self, pg_conn: Any) -> None:
+        self._conn = pg_conn
+
+    def execute(self, sql: str, params: tuple = ()):
+        pg_sql = sql.replace("?", "%s")
+        return self._conn.execute(pg_sql, params)
+
+    def executemany(self, sql: str, seq_of_params):
+        pg_sql = sql.replace("?", "%s")
+        with self._conn.cursor() as cur:
+            cur.executemany(pg_sql, seq_of_params)
+
+    def executescript(self, script: str):
+        for stmt in script.split(";"):
+            clean = stmt.strip()
+            if clean:
+                self._conn.execute(clean)
+
+    def cursor(self):
+        return self
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
 
 
 def new_id() -> str:
@@ -27,7 +60,23 @@ def hash_pwd(password: str) -> str:
     return hashlib.sha256((password or "").encode("utf-8")).hexdigest()
 
 
-def get_conn() -> sqlite3.Connection:
+def get_db_engine_info() -> dict:
+    dsn = get_env("DATABASE_URL") or os.environ.get("DATABASE_URL", "").strip()
+    if dsn.startswith(("postgres://", "postgresql://")):
+        return {"engine": "postgresql", "driver": "psycopg", "target": "Configured Postgres DSN"}
+    return {"engine": "sqlite", "driver": "sqlite3", "target": str(DB_PATH.name)}
+
+
+def get_conn():
+    dsn = get_env("DATABASE_URL") or os.environ.get("DATABASE_URL", "").strip()
+    if dsn.startswith(("postgres://", "postgresql://")):
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            return _PostgresCompatConnection(psycopg.connect(dsn, row_factory=dict_row))
+        except Exception:
+            pass
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -36,6 +85,7 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     conn = get_conn()
     cur = conn.cursor()
+    engine = get_db_engine_info()["engine"]
 
     cur.executescript(
         """
@@ -189,24 +239,25 @@ def init_db() -> None:
         """
     )
 
-    # Ensure new profile columns exist on older omniscient.db files
-    existing_cols = {row["name"] for row in cur.execute("PRAGMA table_info(users)").fetchall()}
-    migrations = [
-        ("password_hash", "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''"),
-        ("institution", "ALTER TABLE users ADD COLUMN institution TEXT DEFAULT 'Omniscient AI University'"),
-        ("department", "ALTER TABLE users ADD COLUMN department TEXT DEFAULT 'Computer Science & AI'"),
-        ("bio", "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT 'AI & Software Engineering Enthusiast'"),
-        ("created_at", "ALTER TABLE users ADD COLUMN created_at TEXT DEFAULT ''"),
-    ]
-    for col_name, sql in migrations:
-        if col_name not in existing_cols:
-            cur.execute(sql)
+    # Ensure new profile columns exist on older SQLite files
+    if engine == "sqlite":
+        existing_cols = {row["name"] for row in cur.execute("PRAGMA table_info(users)").fetchall()}
+        migrations = [
+            ("password_hash", "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT ''"),
+            ("institution", "ALTER TABLE users ADD COLUMN institution TEXT DEFAULT 'Omniscient AI University'"),
+            ("department", "ALTER TABLE users ADD COLUMN department TEXT DEFAULT 'Computer Science & AI'"),
+            ("bio", "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT 'AI & Software Engineering Enthusiast'"),
+            ("created_at", "ALTER TABLE users ADD COLUMN created_at TEXT DEFAULT ''"),
+        ]
+        for col_name, sql in migrations:
+            if col_name not in existing_cols:
+                cur.execute(sql)
 
-    msg_cols = {row["name"] for row in cur.execute("PRAGMA table_info(messages)").fetchall()}
-    if "attachments_json" not in msg_cols:
-        cur.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT DEFAULT '[]'")
-    if "optimized_prompt" not in msg_cols:
-        cur.execute("ALTER TABLE messages ADD COLUMN optimized_prompt TEXT DEFAULT ''")
+        msg_cols = {row["name"] for row in cur.execute("PRAGMA table_info(messages)").fetchall()}
+        if "attachments_json" not in msg_cols:
+            cur.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT DEFAULT '[]'")
+        if "optimized_prompt" not in msg_cols:
+            cur.execute("ALTER TABLE messages ADD COLUMN optimized_prompt TEXT DEFAULT ''")
 
     # Seed default user if empty
     existing = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]

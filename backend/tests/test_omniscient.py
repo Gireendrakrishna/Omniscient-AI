@@ -19,6 +19,7 @@ from edtech.agent import (
     generate_quiz,
     generate_study_plan,
 )
+from edtech.router import api_edtech_metrics, api_list_quizzes, api_list_submissions
 from general_assistant.agent import run_supervisor
 from general_assistant.prompt_engine import (
     create_custom_template,
@@ -31,12 +32,23 @@ from general_assistant.prompt_engine import (
 from general_assistant.router import (
     ChatRequest,
     MemoryCreateRequest,
+    NoteCreateRequest,
+    NoteUpdateRequest,
     api_chat,
     api_clear_all_conversations,
     api_create_memory,
+    api_create_note,
     api_delete_conversation,
+    api_delete_memory,
+    api_delete_note,
+    api_get_conversation,
+    api_get_note,
+    api_list_conversations,
     api_list_memories,
+    api_list_notes,
+    api_update_note,
 )
+from mongo_store import RESEARCH_NOTE_COLLECTION_SCHEMA
 
 
 def _run_coro(coro):
@@ -168,14 +180,73 @@ def test_omniscient_platform():
         assert "modules" in generate_course_blueprint("Deep Learning", "intermediate")
         assert evaluate_submission("## Architecture\nModular implementation.", 100.0)["suggested_score"] > 0
 
-        # 10. Chat Persistence & History Deletion + Approved Memory
+        # 10. SQL JOINs, Chat Persistence, Approved Memory & Cleanup
         mem = _run_coro(api_create_memory(MemoryCreateRequest(key="style", content="Concise tables", is_user_approved=True)))
+        mem_id = mem["memory"]["id"]
         assert mem["memory"]["is_user_approved"] is True
         assert len(_run_coro(api_list_memories())["memories"]) >= 1
+        assert _run_coro(api_delete_memory(mem_id))["deleted"] is True
 
         chat_turn = _run_coro(api_chat(ChatRequest(prompt="Explain 1 + 1", attached_file_ids=[pdf_id])))
-        assert _run_coro(api_delete_conversation(chat_turn["conversation_id"]))["deleted"] is True
+        conv_id = chat_turn["conversation_id"]
+        convs_res = _run_coro(api_list_conversations())
+        assert any(c["id"] == conv_id and "author_name" in c for c in convs_res["conversations"])
+        assert _run_coro(api_get_conversation(conv_id))["conversation"]["id"] == conv_id
+        assert _run_coro(api_delete_conversation(conv_id))["deleted"] is True
         assert _run_coro(api_clear_all_conversations())["cleared"] is True
+
+        # EdTech SQL JOIN endpoints
+        quizzes_res = _run_coro(api_list_quizzes())
+        assert len(quizzes_res["quizzes"]) >= 1
+        assert "course_title" in quizzes_res["quizzes"][0]
+        assert "linked_quizzes_count" in _run_coro(api_edtech_metrics())
+        _run_coro(api_list_submissions())
+
+        # 11. NoSQL MongoDB Schema Modeling & CRUD Operations
+        assert "$jsonSchema" in RESEARCH_NOTE_COLLECTION_SCHEMA
+        created_note = _run_coro(
+            api_create_note(
+                NoteCreateRequest(
+                    title="Kalvium Viva Notes",
+                    content="Covers HTTP middleware, SQL JOINs, Mongo CRUD, and React Router.",
+                    category="research",
+                    tags=["viva", "architecture"],
+                    pinned=True,
+                )
+            )
+        )
+        note_id = created_note["note"]["id"]
+        assert _run_coro(api_get_note(note_id))["note"]["metadata"]["pinned"] is True
+        assert any(n["id"] == note_id for n in _run_coro(api_list_notes())["notes"])
+        updated_note = _run_coro(api_update_note(note_id, NoteUpdateRequest(title="Updated Viva Notes", pinned=False)))
+        assert updated_note["note"]["title"] == "Updated Viva Notes"
+        assert _run_coro(api_delete_note(note_id))["deleted"] is True
+
+        # 12. Middleware & HTTP Headers Verification
+        from fastapi.responses import JSONResponse
+        from starlette.requests import Request
+        from main import request_context_middleware
+
+        dummy_scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/health",
+            "headers": [],
+            "query_string": b"",
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 8000),
+            "scheme": "http",
+        }
+        dummy_req = Request(dummy_scope)
+
+        async def _next(_req):
+            return JSONResponse({"ok": True}, status_code=200)
+
+        mw_resp = _run_coro(request_context_middleware(dummy_req, _next))
+        assert mw_resp.status_code == 200
+        assert "X-Request-ID" in mw_resp.headers
+        assert "X-Process-Time-Ms" in mw_resp.headers
+        assert mw_resp.headers["X-Content-Type-Options"] == "nosniff"
 
     finally:
         for p in cleanup_paths:

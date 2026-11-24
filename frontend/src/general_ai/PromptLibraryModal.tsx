@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { BookTemplate, Edit3, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
 import { apiRequest } from "../api";
+import { createDebouncedTask } from "../utils/asyncRuntime";
 
 interface Props {
   isOpen: boolean;
@@ -45,11 +46,15 @@ export const PromptLibraryModal: React.FC<Props> = ({
     }
   };
 
+  const debouncedSearch = useMemo(() => createDebouncedTask(180), []);
+
   useEffect(() => {
     if (isOpen) {
-      loadTemplates(searchQuery, selectedCategory);
+      debouncedSearch(() => {
+        loadTemplates(searchQuery, selectedCategory);
+      });
     }
-  }, [isOpen, searchQuery, selectedCategory]);
+  }, [isOpen, searchQuery, selectedCategory, debouncedSearch]);
 
   if (!isOpen) return null;
 

@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from database import get_conn, new_id, now_iso
@@ -97,7 +97,7 @@ async def api_enroll(payload: EnrollRequest) -> Dict[str, Any]:
     return {"enrolled": True, "course_id": payload.course_id}
 
 
-@router.post("/api/courses/ai-generate")
+@router.post("/api/courses/ai-generate", status_code=status.HTTP_201_CREATED)
 async def api_ai_generate_course(payload: CourseGenRequest) -> Dict[str, Any]:
     bp = generate_course_blueprint(payload.topic, payload.difficulty)
     cid = new_id()
@@ -134,10 +134,18 @@ async def api_update_course(course_id: str, payload: CourseUpdateRequest) -> Dic
     return {"course": {"id": course_id, "title": title, "description": desc, "is_published": bool(pub)}}
 
 
-@router.get("/api/quizzes")
+@router.get("/api/quizzes", status_code=status.HTTP_200_OK)
 async def api_list_quizzes() -> Dict[str, Any]:
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM quizzes ORDER BY created_at DESC").fetchall()
+    # SQL LEFT JOIN linking quizzes to their parent courses
+    rows = conn.execute(
+        """
+        SELECT q.*, c.title AS course_title, c.code AS course_code
+        FROM quizzes q
+        LEFT JOIN courses c ON c.id = q.course_id
+        ORDER BY q.created_at DESC
+        """
+    ).fetchall()
     conn.close()
     quizzes = []
     for r in rows:
@@ -145,6 +153,8 @@ async def api_list_quizzes() -> Dict[str, Any]:
         quizzes.append({
             "id": r["id"],
             "course_id": r["course_id"],
+            "course_title": r["course_title"] or "General Track",
+            "course_code": r["course_code"] or "CORE",
             "title": r["title"],
             "difficulty": r["difficulty"],
             "time_limit_minutes": r["time_limit_minutes"],
@@ -154,7 +164,7 @@ async def api_list_quizzes() -> Dict[str, Any]:
     return {"quizzes": quizzes}
 
 
-@router.post("/api/quizzes/ai-generate")
+@router.post("/api/quizzes/ai-generate", status_code=status.HTTP_201_CREATED)
 async def api_generate_quiz(payload: QuizGenRequest) -> Dict[str, Any]:
     questions = generate_quiz(payload.topic, payload.question_count, payload.difficulty)
     qid = new_id()
@@ -222,10 +232,23 @@ async def api_list_assignments() -> Dict[str, Any]:
     }
 
 
-@router.get("/api/submissions")
+@router.get("/api/submissions", status_code=status.HTTP_200_OK)
 async def api_list_submissions() -> Dict[str, Any]:
     conn = get_conn()
-    rows = conn.execute("SELECT * FROM submissions ORDER BY submitted_at DESC").fetchall()
+    # SQL INNER JOIN + LEFT JOIN combining submissions, assignment rubrics, and author info
+    rows = conn.execute(
+        """
+        SELECT s.*,
+               a.max_score AS assignment_max_score,
+               c.title AS course_title,
+               u.full_name AS author_name
+        FROM submissions s
+        INNER JOIN assignments a ON a.id = s.assignment_id
+        LEFT JOIN courses c ON c.id = a.course_id
+        LEFT JOIN users u ON u.id = s.student_id
+        ORDER BY s.submitted_at DESC
+        """
+    ).fetchall()
     conn.close()
     return {
         "submissions": [
@@ -233,8 +256,11 @@ async def api_list_submissions() -> Dict[str, Any]:
                 "id": r["id"],
                 "assignment_id": r["assignment_id"],
                 "assignment_title": r["assignment_title"],
+                "course_title": r["course_title"] or "Core Curriculum",
+                "author_name": r["author_name"] or "Omniscient User",
                 "content": r["content"],
                 "score": r["score"],
+                "max_score": r["assignment_max_score"],
                 "ai_evaluation": json.loads(r["ai_evaluation_json"] or "{}"),
                 "status": r["status"],
             }
@@ -243,7 +269,7 @@ async def api_list_submissions() -> Dict[str, Any]:
     }
 
 
-@router.post("/api/submissions")
+@router.post("/api/submissions", status_code=status.HTTP_201_CREATED)
 async def api_create_submission(payload: SubmissionRequest) -> Dict[str, Any]:
     conn = get_conn()
     assign = conn.execute("SELECT * FROM assignments WHERE id = ?", (payload.assignment_id,)).fetchone()
@@ -291,7 +317,7 @@ async def api_list_flashcards() -> Dict[str, Any]:
     }
 
 
-@router.post("/api/flashcards/ai-generate")
+@router.post("/api/flashcards/ai-generate", status_code=status.HTTP_201_CREATED)
 async def api_generate_flashcards(payload: FlashcardGenRequest) -> Dict[str, Any]:
     cards = generate_flashcards(payload.topic, payload.count, payload.difficulty)
     conn = get_conn()
@@ -321,14 +347,22 @@ async def api_study_plan(payload: StudyPlanRequest) -> Dict[str, Any]:
     return {"study_plan": generate_study_plan(payload.goal, payload.daily_minutes, payload.days)}
 
 
-@router.get("/api/edtech/metrics")
+@router.get("/api/edtech/metrics", status_code=status.HTTP_200_OK)
 async def api_edtech_metrics() -> Dict[str, Any]:
     conn = get_conn()
     c_count = conn.execute("SELECT COUNT(*) FROM courses WHERE is_enrolled = 1").fetchone()[0]
     f_count = conn.execute("SELECT COUNT(*) FROM flashcards").fetchone()[0]
+    joined_row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT c.id) AS active_courses, COUNT(q.id) AS linked_quizzes
+        FROM courses c
+        INNER JOIN quizzes q ON q.course_id = c.id
+        """
+    ).fetchone()
     conn.close()
     return {
         "enrolled_courses_count": c_count,
+        "linked_quizzes_count": joined_row["linked_quizzes"] if joined_row else 0,
         "average_grade_percent": 91.5,
         "learning_streak_days": 7,
         "flashcards_count": f_count,

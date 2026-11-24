@@ -53,7 +53,18 @@ npm run dev --prefix frontend
 - **Web UI**: `http://localhost:5173`
 - **API Docs**: `http://127.0.0.1:8000/docs`
 
-### Step 3: Run Automated Tests
+## 3. Core Engineering & Concept Architecture
+
+- **Backend & System Design**: FastAPI HTTP Middleware (`X-Request-ID`, latency timing, security headers), RESTful resource routing, and semantic HTTP status codes (`200`, `201`, `400`, `401`, `404`, `500`).
+- **Databases (SQL + NoSQL)**:
+  - **Relational SQL (`backend/database.py`)**: PostgreSQL (`psycopg`) & SQLite dual-engine support with `LEFT JOIN` / `INNER JOIN` queries across conversations, messages, courses, quizzes, and submissions.
+  - **NoSQL MongoDB (`backend/mongo_store.py`)**: `$jsonSchema`-validated document modeling (`ResearchNoteSchema`, embedded metadata, tag arrays) and full CRUD operations (`/api/notes`).
+- **Frontend (`frontend/src/`)**: URL-based client-side routing (`react-router-dom`), React `useState` state management, and idiomatic JavaScript runtime helpers (`frontend/src/utils/asyncRuntime.ts` covering `async/await`, closures, Promises vs callbacks, event loop scheduling, and hoisting).
+- **Engineering Practices & Git Workflow**: `.env` + `.env.example` secret isolation, `.gitignore` excluding build/cache/credential artifacts, and modular feature branches / atomic commits.
+
+---
+
+## 4. Running Automated Tests
 ```powershell
 $env:PYTHONPATH = "backend"
 .\.venv\Scripts\python.exe -m pytest backend/tests/test_omniscient.py -v -p no:langsmith -p no:anyio -p no:asyncio

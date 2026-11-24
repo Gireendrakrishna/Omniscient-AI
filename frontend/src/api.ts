@@ -1,4 +1,7 @@
+import { createRequestTracker, formatHttpErrorMessage } from "./utils/asyncRuntime";
+
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || "";
+const requestTracker = createRequestTracker();
 
 export function getStoredToken(): string | null {
   return localStorage.getItem("omniscient_jwt_token");
@@ -10,6 +13,10 @@ export function setStoredToken(token: string | null): void {
   } else {
     localStorage.removeItem("omniscient_jwt_token");
   }
+}
+
+export function getActiveRequestsCount(): number {
+  return requestTracker.activeCount();
 }
 
 export async function apiRequest<T = any>(
@@ -27,24 +34,28 @@ export async function apiRequest<T = any>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
-
-  // Read body text ONCE so it never throws "body stream already read"
-  const rawText = await res.text();
-  let parsed: any = null;
+  requestTracker.enter();
   try {
-    parsed = rawText ? JSON.parse(rawText) : {};
-  } catch {
-    parsed = null;
-  }
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+    });
 
-  if (!res.ok) {
-    const errMsg = parsed?.detail || rawText || `HTTP ${res.status}`;
-    throw new Error(typeof errMsg === "string" ? errMsg : JSON.stringify(errMsg));
-  }
+    // Read body text ONCE so it never throws "body stream already read"
+    const rawText = await res.text();
+    let parsed: any = null;
+    try {
+      parsed = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      parsed = null;
+    }
 
-  return (parsed !== null ? parsed : rawText) as T;
+    if (!res.ok) {
+      throw new Error(formatHttpErrorMessage(res.status, parsed?.detail || rawText));
+    }
+
+    return (parsed !== null ? parsed : rawText) as T;
+  } finally {
+    requestTracker.leave();
+  }
 }

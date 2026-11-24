@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { apiRequest } from "../api";
 import { MarkdownRenderer } from "../shared/MarkdownRenderer";
+import { readBlobTextPromise } from "../utils/asyncRuntime";
 import { PromptLibraryModal } from "./PromptLibraryModal";
 
 export interface AttachedFileItem {
@@ -68,6 +69,9 @@ export const GeneralAiView: React.FC<Props> = ({
       ]);
 
       try {
+        if (["TXT", "CSV"].includes(ext) && file.size < 250_000) {
+          await readBlobTextPromise(file);
+        }
         const formData = new FormData();
         formData.append("file", file);
         const res = await apiRequest("/api/files/upload", {
